@@ -14,6 +14,10 @@ Run:
 import pandas as pd
 import numpy as np
 import matplotlib
+import warnings
+
+# Suppress non-critical warnings (matplotlib headless mode, etc.)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*non-interactive.*")
 matplotlib.use('Agg')  # Use non-interactive backend - no windows will pop up
 import os
 

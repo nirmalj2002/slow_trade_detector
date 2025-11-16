@@ -17,6 +17,10 @@ If instrument-level data is large, you typically load only the
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend - no windows will pop up
+import warnings
+
+# Suppress non-critical warnings (matplotlib headless mode, etc.)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*non-interactive.*")
 
 from slow_trade_detector.loader import load_csv
 from slow_trade_detector.loader_sybase import load_instrument_from_sybase

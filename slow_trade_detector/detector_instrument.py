@@ -12,10 +12,20 @@ Output DataFrame contains:
 """
 
 import pandas as pd
+import warnings
 from .config import (
     ROLLING_WINDOW,
     ZSCORE_THRESHOLD,
     MIN_HISTORY_DAYS,
+)
+
+# Suppress the pandas FutureWarning about groupby.apply operating on grouping
+# columns. This is expected behavior for our use case (we want to preserve and
+# modify grouping columns), and will be handled in a future refactor.
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=".*groupby.*grouping columns.*",
 )
 
 
@@ -59,7 +69,7 @@ def detect_instrument_anomalies(df: pd.DataFrame) -> pd.DataFrame:
         return group
 
     df = (
-        df.groupby(["date", "phase"], group_keys=False)
+        df.groupby(["date", "phase"], group_keys=False, sort=False)
         .apply(cross_check)
     )
 
@@ -67,27 +77,21 @@ def detect_instrument_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Time-series anomaly per secId
     # ───────────────────────────────────────────────────────────────
 
-    def ts_check(group):
-        group = group.sort_values("date")
+    # Sort by secId and date globally to compute rolling statistics correctly
+    df = df.sort_values(["secId", "date"]).reset_index(drop=True)
 
-        roll_med = group["cpu_time"].rolling(
-            ROLLING_WINDOW, min_periods=MIN_HISTORY_DAYS
-        ).median()
-        roll_std = group["cpu_time"].rolling(
-            ROLLING_WINDOW, min_periods=MIN_HISTORY_DAYS
-        ).std()
-
-        group["roll_med_cpu"] = roll_med
-        group["roll_std_cpu"] = roll_std
-        group["zscore_cpu"] = (group["cpu_time"] - roll_med) / roll_std
-        group["ts_anomaly"] = (group["zscore_cpu"] > ZSCORE_THRESHOLD).fillna(False)
-
-        return group
-
-    df = (
-        df.groupby("secId", group_keys=False)
-        .apply(ts_check)
+    # Compute rolling median and std per secId using groupby().transform()
+    # This approach naturally preserves all columns in df.
+    df["roll_med_cpu"] = df.groupby("secId", sort=False)["cpu_time"].transform(
+        lambda x: x.rolling(ROLLING_WINDOW, min_periods=MIN_HISTORY_DAYS).median()
     )
+    df["roll_std_cpu"] = df.groupby("secId", sort=False)["cpu_time"].transform(
+        lambda x: x.rolling(ROLLING_WINDOW, min_periods=MIN_HISTORY_DAYS).std()
+    )
+
+    # Compute z-score and flag time-series anomalies
+    df["zscore_cpu"] = (df["cpu_time"] - df["roll_med_cpu"]) / df["roll_std_cpu"]
+    df["ts_anomaly"] = (df["zscore_cpu"] > ZSCORE_THRESHOLD).fillna(False)
 
     # ───────────────────────────────────────────────────────────────
     # 3. Final slow trade
