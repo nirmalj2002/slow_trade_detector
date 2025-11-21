@@ -1,179 +1,207 @@
-You are helping build an end-to-end Autosys Analytics Toolkit.
+You are assisting in building a Shell-only Autosys Workflow Analysis Toolkit.
 
-IMPORTANT ARCHITECTURE REQUIREMENT:
------------------------------------
-PHASE 1 (Autosys AE server): 
-    - Shell-only (.sh). No Python. No pip. 
-    - Uses autorep, autosyslog commands.
-    - Extract raw data only.
+IMPORTANT:
+- Everything must be done using shell (.sh), grep, sed, awk, and standard POSIX tools.
+- No Python. No Perl. No external libraries.
+- This toolkit will run on the Autosys AE server and must work with autorep/autosyslog CLI.
+- The entire analytics pipeline must be implemented in shell scripts.
 
-PHASE 2 (Local machine): 
-    - Python-only. 
-    - Performs DAG building, critical path analysis, delay attribution, visualization.
+===========================================================
+                 PROJECT GOALS (SHELL ONLY)
+===========================================================
 
-Your job is to generate ALL scripts for both PHASE 1 and PHASE 2.
-Be strictly aware of dependencies and folder structure.
+We want to analyze Autosys job flows and SLA delays with a full 
+end-to-end pipeline built entirely in shell scripts.
 
-================================================================
- PHASE 1 — AUTOSYS SERVER (Shell-only)
-================================================================
+The pipeline must:
 
-GOAL:
-Extract all required raw data from Autosys AE for ONE JOB FLOW:
-1. Recursive dependency graph (parents, grandparents, multi-level DAG)
-2. Run history (start/end/duration/eligible/queue)
-3. (Optional) Logs
+1. Extract full multi-level dependency graph for a given job.
+2. Export run history for all jobs in that dependency graph.
+3. Parse Autosys detailed run output (-d) to extract:
+       - start_time
+       - end_time
+       - eligible_time
+       - wait_time (start - eligible)
+       - duration_seconds
+       - status
+4. Compute baseline durations (average of last N runs per job).
+5. Compute latest run durations.
+6. Compute delay = latest - baseline.
+7. Compute critical path for the entire job chain.
+8. Identify which job contributed the most delay.
+9. Produce a readable final report in plain text or CSV.
+10. Everything must be done using Shell scripts, awk, sed, grep.
 
-No Python on Autosys server. Only shell + Autosys CLI.
+===========================================================
+         FOLDER STRUCTURE (MANDATORY FOR ALL SCRIPTS)
+===========================================================
 
-FOLDER STRUCTURE (MANDATORY):
------------------------------
-After running Step 1 (dependency crawler), we have:
+After Step 1 (dependency crawl), we have this structure:
 
 ./deps_<JOB>/
-    deps_all.txt      # List of all jobs in dependency graph (1 per line)
-    deps_map.txt      # JOB: P1 P2 ...
-    deps_edges.txt    # PARENT CHILD
+    deps_all.txt      # 1 job per line
+    deps_map.txt      # JOB: P1 P2 P3 ...
+    deps_edges.txt    # PARENT CHILD (space-separated)
 
-We must NOT modify Step 1 results.
-Step 2 must READ deps_all.txt exactly as is.
+Step 1 script (crawl_dependencies.sh) is already implemented and working.
+Do NOT modify Step 1.
+All further scripts MUST use this structure.
 
-### STEP 1: Dependency crawl (already working)
-We already have:
-    crawl_dependencies.sh <ROOT_JOB>
-that produces deps_<JOB>/ folder above.
-Do not modify this script.
-Only use its output.
+After Step 2 (run export), we need this:
 
-### STEP 2: Export run history (required)
-Generate a shell script named:
-    export_runs.sh
+./runs_<JOB>_<TIMESTAMP>/
+    JOB1_runs.txt
+    JOB2_runs.txt
+    JOB3_runs.txt
+    ...
 
-Requirements:
+After Step 3 (optional logs):
+
+./logs_<JOB>_<TIMESTAMP>/
+    JOB1_logs.txt
+    JOB2_logs.txt
+    ...
+
+After Step 4 (analysis output):
+
+./analysis_<JOB>_<TIMESTAMP>/
+    durations.csv
+    baseline.csv
+    delay.csv
+    critical_path.txt
+    report.txt
+
+===========================================================
+                 PHASE 1 — EXTRACTION (SHELL ONLY)
+===========================================================
+
+### STEP 1 — Dependency Crawl (already exists)
+We already have this script:
+    crawl_dependencies.sh <JOB>
+
+It recursively calls autorep -j <job> -q and creates deps_<JOB> folder.
+Do NOT regenerate or modify it.
+
+### STEP 2 — Create export_runs.sh
+This script must:
+
 - Usage: ./export_runs.sh <deps_folder> <RUNS>
 - Default RUNS=30
-- Read jobs from: <deps_folder>/deps_all.txt
+- Read jobs from <deps_folder>/deps_all.txt
 - For each job:
-     autorep -j <job> -r <RUNS> -d > runs_<timestamp>/<job>_runs.txt
-- Create timestamped output folder like:
-     runs_<ROOT_JOB>_YYYYMMDD_HHMMSS/
-- Skip blank lines safely
-- Log progress
-- Handle missing job definitions gracefully
+      autorep -j <job> -r <RUNS> -d > runs_<timestamp>/<job>_runs.txt
+- Create output folder:
+      runs_<ROOT_JOB>_YYYYMMDD_HHMMSS/
+- Skip blank lines
+- Handle missing jobs gracefully
+- Print progress
+- Must not overwrite old export directories (always timestamp)
 
-### STEP 3: Export logs (optional)
-Generate a script named:
-    export_logs.sh
-
-Requirements:
+### STEP 3 — Create export_logs.sh (optional)
 - Usage: ./export_logs.sh <deps_folder> [NUM_LOGS]
 - Default NUM_LOGS=5
-- For each job in deps_all.txt:
-     autosyslog -J <job> -n <NUM_LOGS> > logs_<timestamp>/<job>_logs.txt
-- Create timestamped folder:
-     logs_<ROOT_JOB>_YYYYMMDD_HHMMSS/
-- Logs are optional enrichment for root-cause analysis.
+- Call:
+      autosyslog -J <job> -n <NUM_LOGS>
+- Output folder:
+      logs_<ROOT_JOB>_<TIMESTAMP>/
 
-### STEP 4: Packaging
-Generate a script named:
-    package_export.sh
+===========================================================
+                PHASE 2 — ANALYSIS (SHELL ONLY)
+===========================================================
 
-Requirements:
-- Should zip:
-    deps_<JOB>/
-    runs_<TIMESTAMP>/
-    logs_<TIMESTAMP>/  (if exists)
-- Name ZIP as:
-    autosys_export_<JOB>_<TIMESTAMP>.zip
+All analysis must be done in *pure shell / awk / sed*.
 
-================================================================
- PHASE 2 — LOCAL MACHINE (Python analysis)
-================================================================
+### STEP 4 — Create parse_runs.sh
+Objective:
+For each *_runs.txt file:
+- Extract:
+    job_name
+    run_id  (if present or inferable)
+    start_time
+    end_time
+    eligible_time  (if present)
+    wait_time = start_time - eligible_time
+    duration_seconds = (end - start)
+    status
+- Handle Autosys 11.x/12.x formats.
+- Produce a CSV with columns:
+    job,run_id,start_time,end_time,eligible_time,wait_time,duration_seconds,status
 
-Once the ZIP is downloaded locally, we run Python on laptop.
+Output:
+    parsed_runs.csv
 
-You must generate the following Python modules:
+### STEP 5 — Create build_runtime_tables.sh
+Compute baseline averages and latest-run durations.
 
-### A) parse_runs.py
-Input: runs_<timestamp>/*_runs.txt  
-Output: pandas DataFrame with:
+Inputs:
+- parsed_runs.csv
 
-job  
-run_id (extract if possible)  
-start_time  
-end_time  
-duration_seconds  
-eligible_time (from autorep -d event lines)  
-wait_time = start_time - eligible_time  
-status  
+Outputs:
+- baseline.csv         (job, baseline_duration)
+- latest.csv           (job, latest_duration)
+- delay.csv            (job, delay_seconds)
 
-Must handle Autosys 12.x format (“Event: STARTED”, “Event Time:” etc.).  
-Include defensive regex parsing.
+Delay = latest - baseline.
 
-### B) build_dag.py
-Input: deps_edges.txt  
-Output: NetworkX DiGraph  
-Edges: parent → child  
-Identify root nodes (no incoming edges).  
-Identify final job (highest child).
+### STEP 6 — Create compute_critical_path.sh
+Using deps_edges.txt and latest durations:
 
-### C) critical_path.py
-Requirement:
-- Compute longest-duration path in DAG.
-- Use run durations from parsed DataFrame.
-- Support selecting critical path for a specific run date.
-- Output list of jobs + total duration.
+- Construct DAG in shell/awk.
+- Compute longest (duration-weighted) path from root to target job.
+- Output:
+      critical_path.txt
+      critical_path_duration.txt
 
-### D) delay_attribution.py
-Compute:
-    baseline_duration = average of last N runs per job
-    latest_duration   = most recent run
-    delay = latest - baseline
+### STEP 7 — Create delay_attribution.sh
+- Identify delay contribution for each job on the critical path.
+- Output sorted delay contributions.
 
-Produce sorted table:
-    job | baseline | latest | delay_seconds
+Example output:
+    JOB_E  +420
+    JOB_B  +35
+    JOB_A  +12
 
-### E) main or notebook
-Provide a script or notebook demonstrating:
+### STEP 8 — Create final_report.sh
+Generate a human-readable report combining:
 
-1. Load deps_edges.txt  
-2. Load parsed run history  
-3. Build DAG  
-4. Compute critical path  
-5. Compute delay attribution  
-6. Print report  
-7. (Optional) Visualize DAG and Gantt chart
+- Critical path
+- Path total durations
+- Baseline vs latest
+- Delay attribution
+- Summary sections
 
-### Python environment assumptions:
-- Python 3.10+
-- pandas
-- networkx
-- matplotlib (optional)
-All available locally.
+Output:
+    analysis_<JOB>_<TIMESTAMP>/report.txt
 
-================================================================
- GENERAL RULES
-================================================================
+===========================================================
+                      RULES FOR COPILOT
+===========================================================
 
-- All scripts must be clean, documented, production-ready.
-- Shell scripts must use safe practices: set -e, set -u optional.
-- Python scripts must handle unexpected formatting in autorep output.
-- Preserve folder structure between PHASE 1 and PHASE 2.
-- Use descriptive variable names.
-- Always print helpful progress/log messages.
+- All scripts must be pure POSIX shell. No Python.
+- Use awk extensively for table operations and timestamp math.
+- Every script must validate input arguments.
+- Every script must show clear logging (echo statements).
+- Never overwrite previous outputs; use timestamped folders.
+- Be robust to unexpected whitespace and missing fields.
+- Producing sorted, readable results is required.
+- Scripts must gracefully handle very large dependency graphs.
 
-================================================================
- DELIVERABLES
-================================================================
+===========================================================
+                     DELIVERABLES LIST
+===========================================================
+
+Generate the following scripts (one by one when asked):
 
 1. export_runs.sh
 2. export_logs.sh
-3. package_export.sh
-4. parse_runs.py
-5. build_dag.py
-6. critical_path.py
-7. delay_attribution.py
-8. Example main.py or notebook
-9. README.md describing full workflow
+3. parse_runs.sh
+4. build_runtime_tables.sh
+5. compute_critical_path.sh
+6. delay_attribution.sh
+7. final_report.sh
+8. README.md (shell-only version)
 
-Generate code only when asked; for now, acknowledge the prompt.
+Do NOT generate all scripts at once unless instructed.
+Start with individual scripts upon request.
+
+Acknowledge this prompt when ready.
